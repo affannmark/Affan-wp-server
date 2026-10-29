@@ -1,9 +1,179 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>WhatsApp Automation</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Automation Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f4f7f6; margin: 0; padding: 20px; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.1); }
+        h2 { color: #075e54; text-align: center; }
+        .card { background: #fafafa; border: 1px solid #ddd; padding: 15px; margin-bottom: 15px; border-radius: 6px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input, textarea, select { width: 100%; padding: 10px; margin-bottom: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+        button { background: #25d366; color: white; border: none; padding: 10px 15px; width: 100%; border-radius: 4px; font-size: 16px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #128c7e; }
+        #pairingCodeBox { font-size: 24px; font-weight: bold; text-align: center; color: #d9534f; background: #ffeeba; padding: 10px; border-radius: 4px; margin-top: 10px; display: none; }
+        .status { font-weight: bold; margin-top: 10px; text-align: center; }
+    </style>
 </head>
 <body>
-    <h1>WhatsApp Automation Server is Online!</h1>
+
+<div class="container">
+    <h2>🚀 WhatsApp Automation Panel</h2>
+
+    <!-- LOGIN / PAIRING SECTION -->
+    <div class="card">
+        <h3>1. Connect WhatsApp</h3>
+        <label>Phone Number (with Country Code, e.g., 919876543210):</label>
+        <input type="text" id="phoneInput" placeholder="Enter phone number">
+        <button onclick="startLogin()">Generate Pairing Code</button>
+        
+        <div id="pairingCodeBox"></div>
+        <div id="loginStatus" class="status"></div>
+    </div>
+
+    <!-- AUTOMATION SECTION -->
+    <div class="card">
+        <h3>2. Send Messages Automation</h3>
+        <label>Session ID (Get after connecting):</label>
+        <input type="text" id="sessionIdInput" placeholder="session_123456789">
+
+        <label>Target (Phone Number or Group ID):</label>
+        <input type="text" id="targetInput" placeholder="919876543210 or group_id@g.us">
+
+        <label>Message Prefix (Optional):</label>
+        <input type="text" id="prefixInput" placeholder="[AF_BOT]">
+
+        <label>Messages (Put each message on a new line):</label>
+        <textarea id="messagesInput" rows="5" placeholder="Hello&#10;How are you?&#10;Testing message"></textarea>
+
+        <label>Speed / Delay (in seconds):</label>
+        <input type="number" id="speedInput" value="5" min="1">
+
+        <button onclick="startAutomation()" style="background: #075e54;">Start Automation</button>
+        <button onclick="stopAutomation()" style="background: #d9534f; margin-top: 10px;">Stop Automation</button>
+        
+        <div id="autoStatus" class="status"></div>
+    </div>
+</div>
+
+<script>
+    let codeInterval = null;
+
+    async function startLogin() {
+        const phone = document.getElementById('phoneInput').value.trim();
+        const statusDiv = document.getElementById('loginStatus');
+        const codeBox = document.getElementById('pairingCodeBox');
+
+        if (!phone) {
+            alert('Please enter a phone number');
+            return;
+        }
+
+        statusDiv.innerText = 'Requesting session and pairing code...';
+        codeBox.style.display = 'none';
+
+        try {
+            const res = await fetch('/api/login', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ phone })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                const sessionId = data.sessionId;
+                document.getElementById('sessionIdInput').value = sessionId;
+                statusDiv.innerText = 'Waiting for pairing code from WhatsApp...';
+
+                // Poll for pairing code
+                codeInterval = setInterval(() => fetchPairingCode(sessionId), 3000);
+            } else {
+                statusDiv.innerText = 'Error: ' + data.message;
+            }
+        } catch (e) {
+            statusDiv.innerText = 'Network error: ' + e.message;
+        }
+    }
+
+    async function fetchPairingCode(sessionId) {
+        try {
+            const res = await fetch(`/api/pairing-code/${sessionId}`);
+            const data = await res.json();
+
+            if (data.success && data.status === 'ready') {
+                clearInterval(codeInterval);
+                const codeBox = document.getElementById('pairingCodeBox');
+                codeBox.innerText = data.pairingCode;
+                codeBox.style.display = 'block';
+                document.getElementById('loginStatus').innerText = 'Enter this code in your WhatsApp Linked Devices!';
+            } else if (data.status === 'error') {
+                clearInterval(codeInterval);
+                document.getElementById('loginStatus').innerText = 'Error: ' + data.message;
+            }
+        } catch (e) {
+            console.error(e);
+        }
+    }
+
+    async function startAutomation() {
+        const sessionId = document.getElementById('sessionIdInput').value.trim();
+        const target = document.getElementById('targetInput').value.trim();
+        const prefix = document.getElementById('prefixInput').value;
+        const rawMessages = document.getElementById('messagesInput').value;
+        const speed = document.getElementById('speedInput').value;
+        const statusDiv = document.getElementById('autoStatus');
+
+        if (!sessionId || !target || !rawMessages) {
+            alert('Please fill Session ID, Target, and Messages!');
+            return;
+        }
+
+        const messages = rawMessages.split('\n');
+
+        statusDiv.innerText = 'Starting automation queue...';
+
+        try {
+            const res = await fetch('/api/start-automation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId, target, prefix, messages, speed })
+            });
+            const data = await res.json();
+
+            if (data.success) {
+                statusDiv.innerText = data.message;
+            } else {
+                statusDiv.innerText = 'Error: ' + data.message;
+            }
+        } catch (e) {
+            statusDiv.innerText = 'Error: ' + e.message;
+        }
+    }
+
+    async function stopAutomation() {
+        const sessionId = document.getElementById('sessionIdInput').value.trim();
+        const statusDiv = document.getElementById('autoStatus');
+
+        if (!sessionId) {
+            alert('Please enter Session ID!');
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/stop-automation', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sessionId })
+            });
+            const data = await res.json();
+            statusDiv.innerText = data.message;
+        } catch (e) {
+            statusDiv.innerText = 'Error: ' + e.message;
+        }
+    }
+</script>
+
 </body>
 </html>
