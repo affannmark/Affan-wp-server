@@ -19,7 +19,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 app.use(
   express.static(
@@ -82,6 +82,7 @@ const pairingCodes = {};
 const queueTimers = {};
 const queueProcessing = {};
 const connectingSessions = {};
+const activeLoopState = {};
 
 
 /* ================================
@@ -235,12 +236,6 @@ async function connectWA(phone, sessionId) {
           ];
 
 
-          /*
-           * Start queue.
-           * Processor itself controls
-           * the exact message delay.
-           */
-
           processQueue(
             sessionId
           );
@@ -279,10 +274,6 @@ async function connectWA(phone, sessionId) {
           ];
 
 
-          /*
-           * Clear pending timer.
-           */
-
           if (
             queueTimers[sessionId]
           ) {
@@ -301,11 +292,8 @@ async function connectWA(phone, sessionId) {
           queueProcessing[
             sessionId
           ] = false;
+          activeLoopState[sessionId] = false;
 
-
-          /*
-           * Reconnect after 5 seconds.
-           */
 
           setTimeout(
             () => {
@@ -612,7 +600,7 @@ app.get(
 
 
 /* ================================
-   START AUTOMATION
+   START AUTOMATION (NON-STOP INFINITE LOOP)
 ================================ */
 
 app.post(
@@ -677,45 +665,44 @@ app.post(
       );
 
 
-    pending.forEach(
-      message => {
+    db.run(`DELETE FROM messageQueue WHERE sessionId = ?`, [sessionId], () => {
 
-        db.run(
-          `
-          INSERT INTO messageQueue
-          (
-            sessionId,
-            target,
-            prefix,
-            message,
-            speed,
-            isActive,
-            sentCount
-          )
-          VALUES (?, ?, ?, ?, ?, 1, 0)
-          `,
-          [
-            sessionId,
-            String(target).trim(),
-            prefix,
-            String(message),
-            delaySeconds
-          ]
-        );
+      pending.forEach(
+        message => {
 
-      }
-    );
+          db.run(
+            `
+            INSERT INTO messageQueue
+            (
+              sessionId,
+              target,
+              prefix,
+              message,
+              speed,
+              isActive,
+              sentCount
+            )
+            VALUES (?, ?, ?, ?, ?, 1, 0)
+            `,
+            [
+              sessionId,
+              String(target).trim(),
+              prefix,
+              String(message),
+              delaySeconds
+            ]
+          );
 
+        }
+      );
 
-    /*
-     * Start processor immediately.
-     * It will respect each item's
-     * configured delay.
-     */
+      activeLoopState[sessionId] = true;
 
-    processQueue(
-      sessionId
-    );
+      processQueue(
+        sessionId
+      );
+
+    });
 
 
     res.json({
@@ -723,7 +710,7 @@ app.post(
       success: true,
 
       message:
-        `${pending.length} message(s) added to queue`,
+        `${pending.length} message(s) loaded for non-stop infinite loop`,
 
       delay:
         delaySeconds
@@ -759,6 +746,8 @@ app.post(
       });
 
     }
+
+    activeLoopState[sessionId] = false;
 
 
     db.run(
@@ -805,38 +794,16 @@ app.post(
 
 
 /* ================================
-   QUEUE PROCESSOR
+   QUEUE PROCESSOR (AUTO-RESET INFINITE LOOP)
 ================================ */
-
-/*
- * IMPORTANT:
- *
- * There is NO fixed 3-second interval now.
- *
- * Each message has its own "speed"
- * value in seconds.
- *
- * Example:
- *
- * speed = 10
- *
- * Message 1
- *      ↓
- * 10 seconds
- *      ↓
- * Message 2
- *      ↓
- * 10 seconds
- *      ↓
- * Message 3
- */
 
 async function processQueue(
   sessionId
 ) {
 
   if (
-    queueProcessing[sessionId]
+    queueProcessing[sessionId] ||
+    activeLoopState[sessionId] === false
   ) {
 
     return;
@@ -899,14 +866,21 @@ async function processQueue(
         }
 
 
+        // YAHAN FILE KHATAM HOTE HI TURANT WAPAS RESET HOKAR REPEAT HOGA (NON-STOP)
         if (!item) {
-
-          queueProcessing[
-            sessionId
-          ] = false;
-
+          if (activeLoopState[sessionId] !== false) {
+            db.run(
+              `UPDATE messageQueue SET isActive = 1 WHERE sessionId = ?`,
+              [sessionId],
+              () => {
+                queueProcessing[sessionId] = false;
+                processQueue(sessionId);
+              }
+            );
+          } else {
+            queueProcessing[sessionId] = false;
+          }
           return;
-
         }
 
 
@@ -943,11 +917,6 @@ async function processQueue(
           }
 
 
-          /*
-           * NUMBER = @s.whatsapp.net
-           * GROUP  = @g.us
-           */
-
           const chatId =
             target.endsWith('@g.us')
               ? target
@@ -966,10 +935,6 @@ async function processQueue(
           );
 
 
-          /*
-           * ACTUAL SEND
-           */
-
           await socket.sendMessage(
             chatId,
             {
@@ -984,10 +949,6 @@ async function processQueue(
             )
           );
 
-
-          /*
-           * SAVE LOG
-           */
 
           db.run(
             `
@@ -1007,10 +968,6 @@ async function processQueue(
           );
 
 
-          /*
-           * UPDATE SESSION COUNT
-           */
-
           db.run(
             `
             UPDATE sessions
@@ -1021,10 +978,6 @@ async function processQueue(
             [sessionId]
           );
 
-
-          /*
-           * MARK CURRENT MESSAGE COMPLETE
-           */
 
           db.run(
             `
@@ -1043,12 +996,10 @@ async function processQueue(
               ] = false;
 
 
-              /*
-               * IMPORTANT:
-               *
-               * Wait exactly the number
-               * of seconds selected by user.
-               */
+              if (activeLoopState[sessionId] === false) {
+                return;
+              }
+
 
               const delaySeconds =
                 Math.max(
@@ -1099,11 +1050,6 @@ async function processQueue(
           );
 
 
-          /*
-           * Failed message is stopped
-           * so it doesn't retry endlessly.
-           */
-
           db.run(
             `
             UPDATE messageQueue
@@ -1117,11 +1063,6 @@ async function processQueue(
                 sessionId
               ] = false;
 
-
-              /*
-               * Continue with next queued
-               * message after a small delay.
-               */
 
               queueTimers[
                 sessionId
@@ -1215,7 +1156,7 @@ app.get(
 
 
 /* ================================
-   GROUPS
+   GROUPS (AUTO FETCH)
 ================================ */
 
 app.get(
@@ -1304,7 +1245,7 @@ app.get(
 
 
 /* ================================
-   LOGS
+   LOGS (LIVE TRACKING)
 ================================ */
 
 app.get(
@@ -1317,7 +1258,7 @@ app.get(
       FROM sentLogs
       WHERE sessionId = ?
       ORDER BY id DESC
-      LIMIT 100
+      LIMIT 10
       `,
       [
         req.params.sessionId
